@@ -4,6 +4,7 @@ The window shows one image: the blurred screen behind it, tinted, with glass car
 specular highlights and anti-aliased shapes on top. Hit regions are returned so the
 Tk window can map mouse events back to actions.
 """
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageGrab
 
 SS = 3  # supersampling for shapes
@@ -80,16 +81,91 @@ def build(columns, s=1.0):
     return (w, h), items, L
 
 
-def backdrop(box, size):
-    """Blurred, tinted, slightly saturated grab of what is behind the window."""
+def grab(box):
     try:
-        bg = ImageGrab.grab(box, all_screens=True).convert("RGB").resize(size)
+        return ImageGrab.grab(box, all_screens=True).convert("RGB")
     except Exception:  # noqa: BLE001
-        bg = Image.new("RGB", size, (30, 30, 34))
-    bg = bg.filter(ImageFilter.GaussianBlur(max(size) / 22))
-    bg = ImageEnhance.Color(bg).enhance(1.6)
-    tint = Image.new("RGB", size, (14, 14, 18))
-    return Image.blend(bg, tint, 0.62)
+        return Image.new("RGB", (box[2] - box[0], box[3] - box[1]), (30, 30, 34))
+
+
+class Backdrop:
+    """What is behind the window, with a margin so the lens can bend in content from outside."""
+
+    def __init__(self, img, margin, s):
+        self.m, self.s = margin, s
+        img = img.filter(ImageFilter.GaussianBlur(1.6 * s))      # Liquid Glass is clear, not frosted
+        img = ImageEnhance.Color(img).enhance(1.35)
+        self.src = np.asarray(img, dtype=np.float32) / 255.0
+        self.base = None
+
+
+def backdrop(box, size, s=1.0):
+    m = int(40 * s)
+    img = grab((box[0] - m, box[1] - m, box[0] + size[0] + m, box[1] + size[1] + m))
+    img = img.resize((size[0] + 2 * m, size[1] + 2 * m))
+    return Backdrop(img, m, s)
+
+
+# ---------- lens optics
+LIGHT = np.array([-0.55, -0.83])  # light from the top-left
+
+
+def _sdf(w, h, r):
+    """Signed distance to a rounded rect of size w x h (negative inside) and its outward normal."""
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    px, py = xs + 0.5 - w / 2, ys + 0.5 - h / 2
+    qx, qy = np.abs(px) - (w / 2 - r), np.abs(py) - (h / 2 - r)
+    ox, oy = np.maximum(qx, 0), np.maximum(qy, 0)
+    d = np.hypot(ox, oy) + np.minimum(np.maximum(qx, qy), 0) - r
+    ln = np.hypot(ox, oy) + 1e-6
+    corner = (qx > 0) & (qy > 0)
+    nx = np.where(corner, ox / ln, np.where(qx > qy, 1.0, 0.0)) * np.sign(px)
+    ny = np.where(corner, oy / ln, np.where(qx > qy, 0.0, 1.0)) * np.sign(py)
+    return d, nx, ny
+
+
+def _sample(src, x, y):
+    h, w = src.shape[:2]
+    x = np.clip(x, 0, w - 1.001)
+    y = np.clip(y, 0, h - 1.001)
+    x0, y0 = x.astype(np.int32), y.astype(np.int32)
+    fx, fy = (x - x0)[..., None], (y - y0)[..., None]
+    a, b = src[y0, x0], src[y0, x0 + 1]
+    c, d = src[y0 + 1, x0], src[y0 + 1, x0 + 1]
+    return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
+
+
+def lens(src, off, box, r, s, bezel=18, depth=1.0, dark=0.5, spec=1.0, chroma=1.0):
+    """Liquid Glass slab over `box`: refraction at the bezel, chromatic fringe, dark tint, specular rim.
+
+    src: float RGB array to sample from; off: (dx, dy) of output coords inside src.
+    Returns (rgb float array, alpha mask float array) for the box.
+    """
+    x0, y0, x1, y1 = [int(v) for v in box]
+    w, h = x1 - x0, y1 - y0
+    d, nx, ny = _sdf(w, h, r)
+    b = bezel * s
+    t = np.clip(-d, 0, None)                      # depth inside the edge
+    xb = np.clip(1 - t / b, 0, 1)                  # 1 at the rim, 0 past the bezel
+    bend = (xb ** 2.2) * b * depth * 1.4        # convex lens: strongest at the rim, fades inward
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    gx, gy = xs + x0 + off[0], ys + y0 + off[1]
+    out = np.empty((h, w, 3), np.float32)
+    for ch, k in enumerate((1.0, 1.0 + 0.10 * chroma, 1.0 + 0.20 * chroma)):   # R, G, B bend differently
+        out[..., ch] = _sample(src[..., ch:ch + 1], gx + nx * bend * k, gy + ny * bend * k)[..., 0]
+    # dark, luminance-adaptive tint: bright backgrounds get pulled down more
+    lum = out @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    keep = (1 - dark) - 0.18 * dark * lum
+    out = out * keep[..., None] + np.array([0.03, 0.03, 0.04], np.float32) * dark
+    # specular: thin bright rim facing the light, softer on the opposite side, faint inner glow
+    face = nx * LIGHT[0] + ny * LIGHT[1]
+    rim = np.exp(-((t - 0.6 * s) / (0.9 * s)) ** 2)
+    glow = np.exp(-t / (b * 0.55))
+    hi = spec * (rim * (0.30 + 0.70 * np.clip(face, 0, 1) ** 1.5 + 0.35 * np.clip(-face, 0, 1) ** 2)
+                 + glow * 0.07 * np.clip(face, 0, 1))
+    out = out + hi[..., None] * (1 - out) * 0.9
+    alpha = np.clip(0.5 - d, 0, 1)                 # 1px anti-aliased edge
+    return np.clip(out, 0, 1), alpha
 
 
 def _rr(d, box, r, **kw):
@@ -159,34 +235,45 @@ def _avatar(size, color, text, s):
 def render(bg, items, L, state):
     """state: hover=(kind,id), active={colname:key}, usage={(col,key):left|None|'err'},
     armed=(col,key)|None, initials=fn, label=fn."""
-    w, h = bg.size
-    img = bg.convert("RGBA")
+    s = L.s
+    w, h = bg.src.shape[1] - 2 * bg.m, bg.src.shape[0] - 2 * bg.m
+    if bg.base is None:
+        # 1) the window itself is one thick dark glass slab bending the desktop at its rim
+        arr, alpha = lens(bg.src, (bg.m, bg.m), (0, 0, w, h), L.radius, s,
+                          bezel=34, depth=1.0, dark=0.46, spec=1.0, chroma=1.0)
+        # 2) each column is a thinner slab on top, refracting the slab below
+        cols = {}
+        for kind, box, col, _ in items:
+            b = cols.setdefault(col["name"], list(box))
+            b[0], b[1], b[2], b[3] = min(b[0], box[0]), min(b[1], box[1]), max(b[2], box[2]), max(b[3], box[3])
+        for b in cols.values():
+            cb = (b[0], L.pad, b[2], h - L.pad)
+            sub, a = lens(arr, (0, 0), cb, L.card_r, s, bezel=18, depth=0.9, dark=0.14, spec=0.75, chroma=0.6)
+            reg = arr[cb[1]:cb[3], cb[0]:cb[2]]
+            reg[:] = reg * (1 - a[..., None]) + sub * a[..., None]
+        bg.base, bg.alpha = arr, alpha
 
-    # outer specular sheen
-    img.alpha_composite(_vgrad((w, h), (255, 255, 255, 18), (255, 255, 255, 0)))
-    cols = {}
-    for kind, box, col, _ in items:
-        cols.setdefault(col["name"], [box[0], box[1], box[2], box[3]])
-        b = cols[col["name"]]
-        b[0], b[1], b[2], b[3] = min(b[0], box[0]), min(b[1], box[1]), max(b[2], box[2]), max(b[3], box[3])
-    for name, b in cols.items():
-        _glass_card(img, (b[0], L.pad, b[2], h - L.pad), L.card_r, fill_a=14, edge_a=46)
-
-    over = Image.new("RGBA", (w * SS, h * SS), (0, 0, 0, 0))
-    od = ImageDraw.Draw(over)
+    arr = bg.base.copy()
     hover = state.get("hover")
     for kind, box, col, acc in items:
         key = acc["key"] if isinstance(acc, dict) else None
         hid = (kind, col["name"], key)
-        if kind == "row":
-            active = state["active"].get(col["name"]) == key
-            hov = hover and hover[1:] == hid[1:] and hover[0] in ("row", "ring", "door")
-            if hov or active:
-                _rr(od, box, L.pill_r, fill=(255, 255, 255, 30 if hov else 16),
-                    outline=(255, 255, 255, 46 if hov else 26), width=SS)
-        elif kind == "add" and hover == hid:
-            _rr(od, box, L.pill_r, fill=(255, 255, 255, 26), outline=(255, 255, 255, 40), width=SS)
-        elif kind == "sep":
+        hov = hover and hover[1:] == hid[1:] and (hover[0] in ("row", "ring", "door") if kind == "row"
+                                                   else hover[0] == kind)
+        active = kind == "row" and state["active"].get(col["name"]) == key
+        if kind in ("row", "add") and (hov or active):
+            # 3) hovered / selected rows are a small glass capsule, lighter than the card
+            sub, a = lens(arr, (0, 0), box, L.pill_r, s, bezel=10, depth=0.75,
+                          dark=-0.10 if hov else -0.04, spec=0.9 if hov else 0.6, chroma=0.5)
+            reg = arr[box[1]:box[3], box[0]:box[2]]
+            reg[:] = reg * (1 - a[..., None]) + sub * a[..., None]
+    img = Image.fromarray((arr * 255).astype(np.uint8), "RGB").convert("RGBA")
+
+    over = Image.new("RGBA", (w * SS, h * SS), (0, 0, 0, 0))
+    od = ImageDraw.Draw(over)
+    for kind, box, col, acc in items:
+        key = acc["key"] if isinstance(acc, dict) else None
+        if kind == "sep":
             y = (box[1] + box[3]) / 2
             od.line(((box[0] + L.u(18)) * SS, y * SS, (box[2] - L.u(18)) * SS, y * SS),
                     fill=(255, 255, 255, 26), width=SS)
@@ -240,13 +327,6 @@ def render(bg, items, L, state):
     mask = Image.new("L", (w * SS, h * SS), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, w * SS - 1, h * SS - 1), L.radius * SS, fill=255)
     mask = mask.resize((w, h), Image.LANCZOS)
-    rim = Image.new("L", (w * SS, h * SS), 0)
-    ImageDraw.Draw(rim).rounded_rectangle((0, 0, w * SS - 1, h * SS - 1), L.radius * SS, outline=255,
-                                          width=int(1.2 * SS))
-    rim = rim.resize((w, h), Image.LANCZOS)
-    edge = _vgrad((w, h), (255, 255, 255, 120), (255, 255, 255, 34))
-    edge.putalpha(ImageChops.multiply(edge.getchannel("A"), rim))
-    img.alpha_composite(edge)
     out = Image.new("RGB", (w, h), KEY)
     out.paste(img.convert("RGB"), (0, 0), mask.point(lambda v: 255 if v > 110 else 0))
     return out
@@ -259,15 +339,15 @@ def tooltip(text, origin_box, s=1.0):
     bw, bh = tmp.multiline_textbbox((0, 0), text, font=f, spacing=int(5 * s))[2:]
     pw, ph = int(14 * s), int(10 * s)
     size = (bw + pw * 2, bh + ph * 2 + int(2 * s))
-    bg = backdrop(origin_box, size)
-    L = Layout(s)
-    L.radius = int(14 * s)
-    img = bg.convert("RGBA")
-    _glass_card(img, (0, 0, size[0], size[1]), L.radius, fill_a=26, edge_a=70)
+    if origin_box[2] - origin_box[0] < 4:
+        return Image.new("RGB", size, KEY)  # size probe only
+    bg = backdrop(origin_box, size, s)
+    r = min(int(14 * s), size[1] // 2)
+    arr, alpha = lens(bg.src, (bg.m, bg.m), (0, 0, size[0], size[1]), r, s,
+                      bezel=12, depth=1.0, dark=0.55, spec=1.0, chroma=0.8)
+    img = Image.fromarray((arr * 255).astype(np.uint8), "RGB")
     ImageDraw.Draw(img).multiline_text((pw, ph), text, font=f, fill=FG, spacing=int(5 * s))
-    mask = Image.new("L", (size[0] * SS, size[1] * SS), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] * SS - 1, size[1] * SS - 1), L.radius * SS, fill=255)
-    mask = mask.resize(size, Image.LANCZOS).point(lambda v: 255 if v > 110 else 0)
+    mask = Image.fromarray((alpha > 0.43).astype(np.uint8) * 255, "L")
     out = Image.new("RGB", size, KEY)
-    out.paste(img.convert("RGB"), (0, 0), mask)
+    out.paste(img, (0, 0), mask)
     return out

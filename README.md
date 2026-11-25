@@ -23,6 +23,7 @@
 
 ## O que faz
 
+- **Visual dark Liquid Glass** (estilo iOS 26): lente com refração nas bordas, aberração cromática, brilho especular direcional e tint escuro adaptativo, renderizado sobre o que está atrás da janela.
 - **Um ícone na bandeja** (silhueta de pessoa). Clique e aparece um menu dividido em duas metades: **Claude** e **Codex**.
 - **Troca com um clique.** Clique numa conta e o trocador fecha o app, troca o login e reabre na conta escolhida.
 - **Histórico preservado.**

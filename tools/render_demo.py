@@ -33,16 +33,35 @@ def wallpaper(size):
     for (cx, cy, r, c) in [(0.18, 0.25, 0.42, (217, 119, 87)), (0.78, 0.2, 0.38, (88, 86, 214)),
                            (0.62, 0.85, 0.45, (16, 163, 127)), (0.1, 0.95, 0.3, (47, 125, 225))]:
         d.ellipse(((cx - r) * w, (cy - r) * w, (cx + r) * w, (cy + r) * w), fill=c)
-    return im.filter(ImageFilter.GaussianBlur(w / 10))
+    im = im.filter(ImageFilter.GaussianBlur(w / 12))
+    # crisp details so the lens bending at the rims is visible
+    d = ImageDraw.Draw(im)
+    step = int(46 * S)
+    for x in range(0, w, step):
+        d.line((x, 0, x, h), fill=(255, 255, 255), width=1)
+    for y in range(0, h, step):
+        d.line((0, y, w, y), fill=(255, 255, 255), width=1)
+    for i, (x, y, r) in enumerate([(0.32, 0.18, 60), (0.7, 0.62, 80), (0.15, 0.7, 46), (0.9, 0.3, 54)]):
+        d.ellipse((x * w - r * S, y * h - r * S, x * w + r * S, y * h + r * S),
+                  fill=[(255, 214, 102), (255, 255, 255), (255, 120, 160), (120, 220, 255)][i])
+    return im
 
 
 (w, h), items, L = glass.build(COLS, S)
 canvas_w, canvas_h = w + int(260 * S), h + int(80 * S)
-wall = wallpaper((canvas_w, canvas_h))
+pad = int(60 * S)
+wall_full = wallpaper((canvas_w + 2 * pad, canvas_h + 2 * pad))
+wall = wall_full.crop((pad, pad, pad + canvas_w, pad + canvas_h))
 ox, oy = int(40 * S), int(40 * S)
-glass.backdrop = lambda box, size: Image.blend(
-    wall.crop((box[0], box[1], box[2], box[3])).resize(size).filter(ImageFilter.GaussianBlur(max(size) / 22)),
-    Image.new("RGB", size, (14, 14, 18)), 0.62)
+
+
+def fake_backdrop(box, size, s=1.0):
+    m = int(40 * s)
+    img = wall_full.crop((box[0] - m + pad, box[1] - m + pad, box[0] + size[0] + m + pad, box[1] + size[1] + m + pad))
+    return glass.Backdrop(img, m, s)
+
+
+glass.backdrop = fake_backdrop
 
 state = {"hover": ("row", "Codex", "x3"), "armed": None, "initials": lambda a: a["name"][0].upper(),
          "active": {"Claude": "c1", "Codex": "x1"}, "usage": USAGE}

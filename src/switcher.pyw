@@ -149,7 +149,7 @@ class App:
             sw = self.root.winfo_screenwidth()
             pos = (max(8, min(x - w // 2, sw - w - 8)), max(y - h - 16, 8))
         self.popup_pos = pos
-        self.bg = glass.backdrop((pos[0], pos[1], pos[0] + w, pos[1] + h), (w, h))
+        self.bg = glass.backdrop((pos[0], pos[1], pos[0] + w, pos[1] + h), (w, h), self.scale)
 
         pop = self.popup = tk.Toplevel(self.root, bg=KEY_HEX)
         pop.overrideredirect(True)
