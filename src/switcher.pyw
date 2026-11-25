@@ -154,14 +154,51 @@ class App:
         return next(p for p in self.providers if p.name == name)
 
     # ---- popup
+    def sort_key(self, p, acc):
+        """Most limit left first; exhausted accounts after, soonest reset first; unknown last."""
+        data = (self.usage.get((p.name, acc["key"])) or (0, None))[1]
+        if not isinstance(data, dict):
+            return (2, 0, 0)
+        s, w = data.get("session"), data.get("weekly")
+        if w and w[0] <= 0:
+            return (1, w[1], 0)                      # weekly gone: wait for the weekly reset
+        if s and s[0] <= 0:
+            return (1, s[1], 0)                      # session gone: wait for the session reset
+        return (0, -(s[0] if s else 100), -(w[0] if w else 100))
+
+    def ordered(self, p):
+        return sorted(p.idx["accounts"], key=lambda a: self.sort_key(p, a))
+
     def columns(self):
         cols = []
         for p in self.providers:
-            groups = {}
-            for acc in p.idx["accounts"]:
-                groups.setdefault(acc["email"], []).append(acc)
-            cols.append({"name": p.name, "accent": p.accent, "groups": list(groups.items())})
+            groups = []                              # consecutive accounts with the same e-mail share a header
+            for acc in self.ordered(p):
+                if groups and groups[-1][0] == acc["email"]:
+                    groups[-1][1].append(acc)
+                else:
+                    groups.append((acc["email"], [acc]))
+            cols.append({"name": p.name, "accent": p.accent, "groups": groups})
         return cols
+
+    def schedule_reorder(self):
+        """Usage answers arrive one by one: wait for a short quiet gap, then re-order once."""
+        if getattr(self, "_reorder_job", None):
+            self.root.after_cancel(self._reorder_job)
+        self._reorder_job = self.root.after(250, self.reorder)
+        self.paint()
+
+    def reorder(self):
+        self._reorder_job = None
+        """Re-layout once fresh usage changes the order."""
+        if not self.popup or self.busy or self.armed:
+            return
+        shown = [a["key"] for k, b, c, a in self.items if k == "row"]
+        want = [a["key"] for p in self.providers for a in self.ordered(p)]
+        if shown != want:
+            self.show(keep_pos=True)
+        else:
+            self.paint()
 
     def state(self):
         return {"hover": self.hover, "armed": self.armed, "initials": initials,
@@ -318,7 +355,7 @@ class App:
             except Exception as ex:  # noqa: BLE001
                 res = ex
             self.usage[(p.name, acc["key"])] = (time.time(), res)
-            self.call(self.paint)
+            self.call(self.schedule_reorder)
         self.usage[uid] = (time.time(), None)
         threading.Thread(target=work, daemon=True).start()
 
