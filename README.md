@@ -24,6 +24,8 @@
 ## O que faz
 
 - **Visual dark Liquid Glass** (estilo iOS 26): lente com refração nas bordas, aberração cromática, brilho especular direcional e tint escuro adaptativo, renderizado sobre o que está atrás da janela.
+- **Fundo do vidro configurável** (`BACKDROP` em `src/switcher.pyw`): `"noise"` (padrão) usa um degradê preto/grafite com granulado, rápido porque as lentes são calculadas uma vez; `"screen"` refrata o que está atrás da janela.
+- **Texto nítido**: letras desenhadas pelo próprio Windows (ClearType) por cima do vidro, com tamanho mínimo legível e corte com `…` quando não cabem.
 - **Um ícone na bandeja** (silhueta de pessoa). Clique e aparece um menu dividido em duas metades: **Claude** e **Codex**.
 - **Troca com um clique.** Clique numa conta e o trocador fecha o app, troca o login e reabre na conta escolhida.
 - **Histórico preservado.**

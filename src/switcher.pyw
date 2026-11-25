@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import font as tkfont, messagebox
 
 import pystray
 from PIL import Image, ImageDraw, ImageTk
@@ -15,6 +15,7 @@ import claude_core  # noqa: E402
 import codex_core  # noqa: E402
 import glass  # noqa: E402
 
+BACKDROP = "noise"  # "noise" = fixed dark gradient (fast) | "screen" = what is behind the window
 UI_SCALE = 0.62  # menu size relative to the original design
 KEY_HEX = "#%02x%02x%02x" % glass.KEY
 
@@ -38,6 +39,42 @@ class Provider:
 
     def active(self):
         return next((a for a in self.idx["accounts"] if a["key"] == self.idx.get("active")), None)
+
+
+_FAMILY = {"regular": ("Segoe UI Variable Text", "normal"), "semibold": ("Segoe UI Variable Text Semibold", "normal"),
+           "bold": ("Segoe UI", "bold"), "icon": ("Segoe Fluent Icons", "normal")}
+_ANCHOR = {"lm": "w", "mm": "center", "la": "nw", "rm": "e"}
+
+
+_FAMS = None
+
+
+def _tk_family(name):
+    global _FAMS
+    if _FAMS is None:
+        _FAMS = {f.lower() for f in tkfont.families()}
+    fams = _FAMS
+    fb = {"Segoe UI Variable Text": "Segoe UI", "Segoe UI Variable Text Semibold": "Segoe UI Semibold",
+          "Segoe Fluent Icons": "Segoe MDL2 Assets"}
+    return name if name.lower() in fams else fb.get(name, "Segoe UI")
+
+
+def draw_text(canvas, ops, img):
+    """Draw text natively (ClearType, hinted) on top of the glass image; RGBA colours blended on the pixel below."""
+    canvas.delete("txt")
+    px = img.convert("RGB")
+    for x, y, text, (size, weight), fill, anchor in ops:
+        fam, wt = _FAMILY[weight]
+        col = fill
+        if isinstance(col, str):
+            col = tuple(int(col[i:i + 2], 16) for i in (1, 3, 5))
+        if len(col) == 4:
+            under = px.getpixel((min(max(int(x), 0), px.width - 1), min(max(int(y), 0), px.height - 1)))
+            a = col[3] / 255
+            col = tuple(int(col[i] * a + under[i] * (1 - a)) for i in range(3))
+        f = (_tk_family(fam), -int(size), wt)
+        a = _ANCHOR.get(anchor, "nw")
+        canvas.create_text(x, y, text=text, font=f, fill="#%02x%02x%02x" % col[:3], anchor=a, tags="txt")
 
 
 def initials(acc):
@@ -99,6 +136,7 @@ class App:
         self.popup = self.tip = None
         self.busy = False
         self.usage, self.armed, self.hover = {}, None, None
+        self.bg_cache = {}
         self.tray = pystray.Icon("switch-ia-account", tray_image(), self.tooltip(),
                                  menu=pystray.Menu(
                                      pystray.MenuItem("Contas", lambda: self.call(self.show), default=True),
@@ -150,15 +188,23 @@ class App:
             sw = self.root.winfo_screenwidth()
             pos = (max(8, min(x - w // 2, sw - w - 8)), max(y - h - 16, 8))
         self.popup_pos = pos
-        self.bg = glass.backdrop((pos[0], pos[1], pos[0] + w, pos[1] + h), (w, h), self.scale)
+        if BACKDROP == "noise":
+            # fixed black/grey noise gradient: lenses are computed once per layout and reused
+            sig = (w, h, tuple(b for _, b, _, _ in self.items))
+            if sig not in self.bg_cache:
+                self.bg_cache = {sig: glass.noise_backdrop((w, h), self.scale)}
+            self.bg = self.bg_cache[sig]
+        else:
+            self.bg = glass.backdrop((pos[0], pos[1], pos[0] + w, pos[1] + h), (w, h), self.scale)
 
         pop = self.popup = tk.Toplevel(self.root, bg=KEY_HEX)
         pop.overrideredirect(True)
         pop.attributes("-topmost", True)
         pop.attributes("-transparentcolor", KEY_HEX)
         pop.geometry(f"{w}x{h}+{pos[0]}+{pos[1]}")
-        self.canvas = tk.Label(pop, bd=0, bg=KEY_HEX, cursor="arrow")
+        self.canvas = tk.Canvas(pop, width=w, height=h, bd=0, highlightthickness=0, bg=KEY_HEX, cursor="arrow")
         self.canvas.pack()
+        self.canvas_img = self.canvas.create_image(0, 0, anchor="nw")
         self.paint()
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", lambda e: self.set_hover(None))
@@ -173,9 +219,11 @@ class App:
     def paint(self):
         if not self.popup:
             return
-        img = glass.render(self.bg, self.items, self.L, self.state())
+        ops = []
+        img = glass.render(self.bg, self.items, self.L, self.state(), ops)
         self.photo = ImageTk.PhotoImage(img)
-        self.canvas.configure(image=self.photo)
+        self.canvas.itemconfigure(self.canvas_img, image=self.photo)
+        draw_text(self.canvas, ops, img)
 
     def hit(self, x, y):
         best = None
@@ -230,20 +278,24 @@ class App:
         box = next(b for k, b, c, a in self.items
                    if k == h[0] and c["name"] == h[1] and isinstance(a, dict) and a["key"] == h[2])
         px, py = self.popup_pos
-        tmp = glass.tooltip(text, (0, 0, 1, 1), self.scale)
+        tmp = glass.tooltip(text, (0, 0, 1, 1), self.scale, [])
         tw, th = tmp.size
         x = px + box[2] + int(8 * self.scale)
         if x + tw > self.root.winfo_screenwidth():
             x = px + box[0] - tw - int(8 * self.scale)
         y = py + (box[1] + box[3]) // 2 - th // 2
-        img = glass.tooltip(text, (x, y, x + tw, y + th), self.scale)
+        ops = []
+        img = glass.tooltip(text, (x, y, x + tw, y + th), self.scale, ops)
         t = self.tip = tk.Toplevel(self.root, bg=KEY_HEX)
         t.overrideredirect(True)
         t.attributes("-topmost", True)
         t.attributes("-transparentcolor", KEY_HEX)
         t.geometry(f"{tw}x{th}+{x}+{y}")
         self.tip_photo = ImageTk.PhotoImage(img)
-        tk.Label(t, image=self.tip_photo, bd=0, bg=KEY_HEX).pack()
+        c = tk.Canvas(t, width=tw, height=th, bd=0, highlightthickness=0, bg=KEY_HEX)
+        c.pack()
+        c.create_image(0, 0, anchor="nw", image=self.tip_photo)
+        draw_text(c, ops, img)
 
     def tip_hide(self):
         if self.tip:

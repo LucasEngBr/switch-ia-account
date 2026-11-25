@@ -36,9 +36,11 @@ def fit(d, text, f, maxw):
     return text[:lo].rstrip() + "…" if lo else "…"
 
 
-def font(size, weight="regular"):
+def font(size, weight="regular", min_px=0):
+    """min_px keeps text readable when the menu is scaled down (Windows body text is ~12px)."""
     if weight != "icon":
-        size = max(7, int(round(size * TEXT_SCALE)))
+        size = int(round(size * TEXT_SCALE))
+    size = max(7, min_px, size)
     k = (size, weight)
     if k not in _fonts:
         names = {"regular": ["SegUIVar.ttf", "segoeui.ttf"], "semibold": ["seguisb.ttf", "segoeuib.ttf"],
@@ -46,18 +48,20 @@ def font(size, weight="regular"):
         for n in names:
             try:
                 _fonts[k] = ImageFont.truetype(n, size)
+                _fonts[k].spec = (size, weight)
                 break
             except OSError:
                 continue
         else:
             _fonts[k] = ImageFont.load_default()
+            _fonts[k].spec = (size, weight)
     return _fonts[k]
 
 
 class Layout:
     def __init__(self, s=1.0):
         self.s = s
-        self.pad, self.gap, self.col_w = self.u(12), self.u(10), self.u(304)
+        self.pad, self.gap, self.col_w = self.u(12), self.u(10), self.u(350)
         self.head_h, self.email_h, self.row_h = self.u(40), self.u(26), self.u(46)
         self.sep_h, self.add_h, self.inner = self.u(11), self.u(42), self.u(8)
         self.radius, self.card_r, self.pill_r = self.u(28), self.u(20), self.u(14)
@@ -116,6 +120,26 @@ class Backdrop:
         img = ImageEnhance.Color(img).enhance(1.35)
         self.src = np.asarray(img, dtype=np.float32) / 255.0
         self.base = None
+
+
+def noise_backdrop(size, s=1.0, seed=7):
+    """Fixed black/graphite gradient with soft grey light pools and film grain (no screen capture)."""
+    m = int(40 * s)
+    W, H = size[0] + 2 * m, size[1] + 2 * m
+    rng = np.random.default_rng(seed)
+    ys, xs = np.mgrid[0:H, 0:W].astype(np.float32)
+    u, v = xs / W, ys / H
+    img = 0.035 + 0.05 * (1 - v) + 0.025 * u                          # base: near-black, lifted top-left
+    for cx, cy, r, a in [(0.22, 0.12, 0.38, 0.22), (0.85, 0.35, 0.30, 0.14),
+                         (0.55, 0.95, 0.45, 0.10), (0.05, 0.75, 0.22, 0.08)]:
+        img += a * np.exp(-(((u - cx) * W / H) ** 2 + (v - cy) ** 2) / (r * r))   # soft grey pools
+    streak = np.exp(-((u * 0.8 + v * 0.6 - 0.62) / 0.035) ** 2) * 0.05            # faint diagonal sheen
+    img += streak
+    img = img[..., None] * np.array([1.0, 1.0, 1.04], np.float32)                   # hint of cool grey
+    img += rng.normal(0, 0.022, (H, W, 1)).astype(np.float32)                       # film grain
+    img = np.clip(img, 0, 1)
+    out = Backdrop(Image.fromarray((img * 255).astype(np.uint8), "RGB"), m, s)
+    return out
 
 
 def backdrop(box, size, s=1.0):
@@ -246,14 +270,18 @@ def _avatar(size, color, text, s):
                                             ImageChops.multiply(hl, mask))))
     ImageDraw.Draw(im).ellipse((0, 0, big - 1, big - 1), outline=(255, 255, 255, 70), width=SS)
     im = im.resize((size, size), Image.LANCZOS)
+    if text is None:
+        return im
     d = ImageDraw.Draw(im)
     d.text((size / 2, size / 2 + s * 0.5), text, font=font(int(11 * s), "semibold"), fill=FG, anchor="mm")
     return im
 
 
-def render(bg, items, L, state):
+def render(bg, items, L, state, ops=None):
     """state: hover=(kind,id), active={colname:key}, usage={(col,key):left|None|'err'},
-    armed=(col,key)|None, initials=fn, label=fn."""
+    armed=(col,key)|None, initials=fn, label=fn.
+    ops: if a list is given, text is not rasterised but appended as
+    (x, y, text, (px, weight), rgba, anchor) so the window can draw it natively (ClearType)."""
     s = L.s
     w, h = bg.src.shape[1] - 2 * bg.m, bg.src.shape[0] - 2 * bg.m
     if bg.base is None:
@@ -305,6 +333,12 @@ def render(bg, items, L, state):
 
     d = ImageDraw.Draw(img)
     s = L.s
+
+    def T(xy, text, font=None, fill=FG, anchor="la"):
+        if ops is None:
+            d.text(xy, text, font=font, fill=fill, anchor=anchor)
+        else:
+            ops.append((xy[0], xy[1], text, getattr(font, "spec", (12, "regular")), fill, anchor))
     for kind, box, col, acc in items:
         key = acc["key"] if isinstance(acc, dict) else None
         cy = (box[1] + box[3]) / 2
@@ -312,17 +346,20 @@ def render(bg, items, L, state):
             dot = L.u(4)
             cx = box[0] + L.u(22)
             d.ellipse((cx - dot, cy - dot, cx + dot, cy + dot), fill=col["accent"])
-            fh = font(int(15 * s), "semibold")
-            d.text((cx + L.u(12), cy), fit(d, col["name"], fh, box[2] - cx - L.u(28)), font=fh, fill=FG, anchor="lm")
+            fh = font(int(15 * s), "semibold", 15)
+            T((cx + L.u(12), cy), fit(d, col["name"], fh, box[2] - cx - L.u(28)), font=fh, fill=FG, anchor="lm")
         elif kind == "email":
-            fe = font(int(11.5 * s))
-            d.text((box[0] + L.u(20), cy), fit(d, acc, fe, box[2] - box[0] - L.u(40)), font=fe, fill=MUTED,
+            fe = font(int(11.5 * s), min_px=12)
+            T((box[0] + L.u(20), cy), fit(d, acc, fe, box[2] - box[0] - L.u(40)), font=fe, fill=MUTED,
                    anchor="lm")
         elif kind == "row":
             a = L.u(30)
-            img.alpha_composite(_avatar(a, acc["color"], state["initials"](acc), s),
+            img.alpha_composite(_avatar(a, acc["color"], None if ops is not None else state["initials"](acc), s),
                                 (box[0] + L.u(10), int(cy - a / 2)))
-            fn, fp = font(int(15.5 * s), "semibold"), font(int(12 * s))
+            if ops is not None:
+                T((box[0] + L.u(10) + a / 2, cy + s * 0.5), state["initials"](acc), font=font(int(11 * s), "semibold", 11),
+                  fill=FG, anchor="mm")
+            fn, fp = font(int(15.5 * s), "semibold", 15), font(int(12 * s), min_px=12)
             tx = box[0] + L.u(50)
             avail = box[2] - L.u(84) - L.u(16) - tx          # stop before the usage ring
             gap = L.u(7)
@@ -335,11 +372,11 @@ def render(bg, items, L, state):
                 plan = fit(d, plan, fp, avail - nw - gap) if plan else ""
             else:
                 name = acc["name"]
-            d.text((tx, cy), name, font=fn, fill=FG, anchor="lm")
+            T((tx, cy), name, font=fn, fill=FG, anchor="lm")
             if plan and plan != "…":
-                d.text((tx + nw + gap, cy), plan, font=fp, fill=MUTED, anchor="lm")
+                T((tx + nw + gap, cy), plan, font=fp, fill=MUTED, anchor="lm")
             if state["active"].get(col["name"]) == key:
-                d.text((box[2] - L.u(52), cy), "", font=font(int(13 * s), "icon"), fill=FG, anchor="mm")
+                T((box[2] - L.u(52), cy), "", font=font(int(13 * s), "icon", 12), fill=FG, anchor="mm")
         elif kind == "ring":
             rs = L.u(22)
             left = state["usage"].get((col["name"], key))
@@ -347,15 +384,15 @@ def render(bg, items, L, state):
             cx = (box[0] + box[2]) / 2
             img.alpha_composite(ring, (int(cx - rs / 2), int(cy - rs / 2)))
             if left == "err":
-                d.text((cx, cy), "!", font=font(int(11 * s), "bold"), fill=MUTED, anchor="mm")
+                T((cx, cy), "!", font=font(int(11 * s), "bold"), fill=MUTED, anchor="mm")
         elif kind == "door":
             armed = state.get("armed") == (col["name"], key)
             hov = hover == ("door", col["name"], key)
             fill = RED if armed else (FG if hov else MUTED)
-            d.text(((box[0] + box[2]) / 2, cy), "", font=font(int(14 * s), "icon"), fill=fill, anchor="mm")
+            T(((box[0] + box[2]) / 2, cy), "", font=font(int(14 * s), "icon", 13), fill=fill, anchor="mm")
         elif kind == "add":
-            d.text((box[0] + L.u(22), cy), "", font=font(int(12 * s), "icon"), fill=FG, anchor="mm")
-            d.text((box[0] + L.u(42), cy), "Adicionar conta", font=font(int(13 * s)), fill=FG, anchor="lm")
+            T((box[0] + L.u(22), cy), "", font=font(int(12 * s), "icon", 12), fill=FG, anchor="mm")
+            T((box[0] + L.u(42), cy), "Adicionar conta", font=font(int(13 * s), min_px=13), fill=FG, anchor="lm")
 
     # rounded window: outside the outer radius becomes the transparent key colour
     mask = Image.new("L", (w * SS, h * SS), 0)
@@ -366,9 +403,9 @@ def render(bg, items, L, state):
     return out
 
 
-def tooltip(text, origin_box, s=1.0):
+def tooltip(text, origin_box, s=1.0, ops=None):
     """Small glass bubble; returns (image, size)."""
-    f = font(int(12.5 * s))
+    f = font(int(12.5 * s), min_px=13)
     tmp = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     bw, bh = tmp.multiline_textbbox((0, 0), text, font=f, spacing=int(5 * s))[2:]
     pw, ph = int(14 * s), int(10 * s)
@@ -380,7 +417,12 @@ def tooltip(text, origin_box, s=1.0):
     arr, alpha = lens(bg.src, (bg.m, bg.m), (0, 0, size[0], size[1]), r, s,
                       bezel=12, depth=1.0, dark=0.55, spec=1.0, chroma=0.8)
     img = Image.fromarray((arr * 255).astype(np.uint8), "RGB")
-    ImageDraw.Draw(img).multiline_text((pw, ph), text, font=f, fill=FG, spacing=int(5 * s))
+    if ops is None:
+        ImageDraw.Draw(img).multiline_text((pw, ph), text, font=f, fill=FG, spacing=int(5 * s))
+    else:
+        lh = (bh + int(5 * s)) / max(1, text.count("\n") + 1)
+        for i, line in enumerate(text.split("\n")):
+            ops.append((pw, ph + i * lh, line, f.spec, FG, "la"))
     mask = Image.fromarray((alpha > 0.43).astype(np.uint8) * 255, "L")
     out = Image.new("RGB", size, KEY)
     out.paste(img, (0, 0), mask)
