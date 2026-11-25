@@ -322,7 +322,7 @@ def render(bg, items, L, state):
             a = L.u(30)
             img.alpha_composite(_avatar(a, acc["color"], state["initials"](acc), s),
                                 (box[0] + L.u(10), int(cy - a / 2)))
-            fn, fp = font(int(13.5 * s), "semibold"), font(int(12 * s))
+            fn, fp = font(int(15.5 * s), "semibold"), font(int(12 * s))
             tx = box[0] + L.u(50)
             avail = box[2] - L.u(84) - L.u(16) - tx          # stop before the usage ring
             gap = L.u(7)
