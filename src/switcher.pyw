@@ -15,6 +15,7 @@ import claude_core  # noqa: E402
 import codex_core  # noqa: E402
 import glass  # noqa: E402
 
+UI_SCALE = 0.5  # menu size relative to the original design
 KEY_HEX = "#%02x%02x%02x" % glass.KEY
 
 
@@ -88,7 +89,7 @@ class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.scale = self.root.winfo_fpixels("1i") / 96
+        self.scale = self.root.winfo_fpixels("1i") / 96 * UI_SCALE
         self.providers = [Provider("Claude", claude_core, "#d97757"), Provider("Codex", codex_core, "#10a37f")]
         for p in self.providers:
             try:
