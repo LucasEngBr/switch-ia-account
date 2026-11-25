@@ -444,6 +444,10 @@ class App:
 
 
 if __name__ == "__main__":
+    # pythonw has no console: keep a log so a crash leaves a trace
+    LOG = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SwitchIAAccount.log")
+    sys.stdout = sys.stderr = open(LOG, "a", encoding="utf-8", buffering=1)
+    print(time.strftime("\n--- start %Y-%m-%d %H:%M:%S"))
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:  # noqa: BLE001
@@ -451,4 +455,12 @@ if __name__ == "__main__":
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "CodexSwitcherSingleton")
     if ctypes.windll.kernel32.GetLastError() == 183:
         sys.exit(0)
-    App().run()
+    import traceback
+    try:
+        app = App()
+        app.root.report_callback_exception = lambda *a: traceback.print_exception(*a)
+        app.run()
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        raise
+    print(time.strftime("--- exit %H:%M:%S"))
