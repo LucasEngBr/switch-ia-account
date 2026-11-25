@@ -49,7 +49,7 @@ cd switch-ia-account
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-O instalador copia o app para `%LOCALAPPDATA%\SwitchIAAccount`, instala as dependências (`pystray`, `Pillow`, `cryptography`), cria atalhos no Menu Iniciar e na Inicialização e abre o ícone na bandeja.
+O instalador copia o app para `%LOCALAPPDATA%\SwitchIAAccount`, instala as dependências (`pystray`, `Pillow`, `cryptography`, `numpy`), cria atalhos no Menu Iniciar e na Inicialização e abre o ícone na bandeja.
 
 Para remover: `powershell -ExecutionPolicy Bypass -File .\uninstall.ps1` (as contas salvas ficam até você apagar as pastas abaixo).
 
