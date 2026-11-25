@@ -17,9 +17,28 @@ RED = (255, 99, 92)
 GREEN, AMBER = (52, 199, 89), (255, 179, 64)
 
 _fonts = {}
+TEXT_SCALE = 1.18  # text a bit larger than the layout grid (icons keep their size)
+
+
+def fit(d, text, f, maxw):
+    """Cut text with '…' so it never runs past maxw pixels."""
+    if maxw <= 0:
+        return ""
+    if d.textlength(text, font=f) <= maxw:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if d.textlength(text[:mid].rstrip() + "…", font=f) <= maxw:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…" if lo else "…"
 
 
 def font(size, weight="regular"):
+    if weight != "icon":
+        size = max(7, int(round(size * TEXT_SCALE)))
     k = (size, weight)
     if k not in _fonts:
         names = {"regular": ["SegUIVar.ttf", "segoeui.ttf"], "semibold": ["seguisb.ttf", "segoeuib.ttf"],
@@ -293,17 +312,32 @@ def render(bg, items, L, state):
             dot = L.u(4)
             cx = box[0] + L.u(22)
             d.ellipse((cx - dot, cy - dot, cx + dot, cy + dot), fill=col["accent"])
-            d.text((cx + L.u(12), cy), col["name"], font=font(int(15 * s), "semibold"), fill=FG, anchor="lm")
+            fh = font(int(15 * s), "semibold")
+            d.text((cx + L.u(12), cy), fit(d, col["name"], fh, box[2] - cx - L.u(28)), font=fh, fill=FG, anchor="lm")
         elif kind == "email":
-            d.text((box[0] + L.u(20), cy), acc, font=font(int(11.5 * s)), fill=MUTED, anchor="lm")
+            fe = font(int(11.5 * s))
+            d.text((box[0] + L.u(20), cy), fit(d, acc, fe, box[2] - box[0] - L.u(40)), font=fe, fill=MUTED,
+                   anchor="lm")
         elif kind == "row":
             a = L.u(30)
             img.alpha_composite(_avatar(a, acc["color"], state["initials"](acc), s),
                                 (box[0] + L.u(10), int(cy - a / 2)))
-            d.text((box[0] + L.u(50), cy), acc["name"], font=font(int(13.5 * s), "semibold"), fill=FG, anchor="lm")
-            nx = box[0] + L.u(50) + d.textlength(acc["name"], font=font(int(13.5 * s), "semibold"))
-            if acc.get("plan"):
-                d.text((nx + L.u(8), cy), acc["plan"], font=font(int(12 * s)), fill=MUTED, anchor="lm")
+            fn, fp = font(int(13.5 * s), "semibold"), font(int(12 * s))
+            tx = box[0] + L.u(50)
+            avail = box[2] - L.u(84) - L.u(16) - tx          # stop before the usage ring
+            gap = L.u(7)
+            plan = acc.get("plan") or ""
+            nw, pw = d.textlength(acc["name"], font=fn), d.textlength(plan, font=fp) if plan else 0
+            if nw + (gap + pw if plan else 0) > avail:
+                name_max = max(avail * 0.6, avail - gap - pw) if plan else avail
+                name = fit(d, acc["name"], fn, name_max)
+                nw = d.textlength(name, font=fn)
+                plan = fit(d, plan, fp, avail - nw - gap) if plan else ""
+            else:
+                name = acc["name"]
+            d.text((tx, cy), name, font=fn, fill=FG, anchor="lm")
+            if plan and plan != "…":
+                d.text((tx + nw + gap, cy), plan, font=fp, fill=MUTED, anchor="lm")
             if state["active"].get(col["name"]) == key:
                 d.text((box[2] - L.u(52), cy), "", font=font(int(13 * s), "icon"), fill=FG, anchor="mm")
         elif kind == "ring":
