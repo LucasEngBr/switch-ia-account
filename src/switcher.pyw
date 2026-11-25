@@ -15,7 +15,7 @@ import claude_core  # noqa: E402
 import codex_core  # noqa: E402
 import glass  # noqa: E402
 
-UI_SCALE = 0.5  # menu size relative to the original design
+UI_SCALE = 0.62  # menu size relative to the original design
 KEY_HEX = "#%02x%02x%02x" % glass.KEY
 
 
