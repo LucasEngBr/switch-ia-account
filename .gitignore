@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+auth.json
+*.bak
+.codex-accounts/
+.claude-accounts/
