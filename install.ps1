@@ -46,9 +46,12 @@ foreach ($lnk in (Join-Path $sm 'Switch IA Account.lnk'), (Join-Path $sm 'Startu
 }
 # "Claude (ultima conta)": opens Claude in the account used last, not always the default one
 $desk = [Environment]::GetFolderPath('Desktop')
-foreach ($lnk in (Join-Path $sm 'Claude (ultima conta).lnk'), (Join-Path $desk 'Claude.lnk')) {
+$claudeLinks = @((Join-Path $sm 'Claude (ultima conta).lnk'), (Join-Path $desk 'Claude.lnk'))
+foreach ($lnk in $claudeLinks) {
     New-Link $lnk 'open_claude.pyw' $claudeIco 'Abre o Claude na ultima conta usada'
 }
+# same AppUserModelID as the Claude app: its window groups under this shortcut, so a taskbar pin keeps it
+try { & (Join-Path $here 'set-aumid.ps1') -Links $claudeLinks | Out-Null } catch { Write-Host "Aviso: AppUserModelID nao aplicado ($_)" }
 
 Start-Process $pyw ('"' + (Join-Path $dst 'switcher.pyw') + '"') -WorkingDirectory $dst
 Write-Host "Pronto. Switch IA Account na bandeja; atalho 'Claude' na Area de Trabalho abre a ultima conta. Instalado em $dst"
