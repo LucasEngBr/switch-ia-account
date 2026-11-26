@@ -78,6 +78,9 @@ def build(columns, s=1.0):
         x0 = L.pad + ci * (L.col_w + L.gap)
         y = L.pad + L.inner
         items.append(("head", (x0, y, x0 + L.col_w, y + L.head_h), col, None))
+        if col["name"] == "Codex":
+            items.append(("auto", (x0 + L.col_w - L.u(54), y + L.u(2),
+                                   x0 + L.col_w - L.u(10), y + L.head_h - L.u(2)), col, None))
         y += L.head_h
         for gi, (email, accs) in enumerate(col["groups"]):
             if gi:
@@ -324,6 +327,26 @@ def render(bg, items, L, state, ops=None):
             y = (box[1] + box[3]) / 2
             od.line(((box[0] + L.u(18)) * SS, y * SS, (box[2] - L.u(18)) * SS, y * SS),
                     fill=(255, 255, 255, 26), width=SS)
+        elif kind == "auto":
+            enabled = state.get("autoresume", False)
+            hovered = state.get("hover") == ("auto", col["name"], None)
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            radius = L.u(15)
+            color = (66, 235, 128, 255) if enabled else (115, 121, 128, 190)
+            if enabled or hovered:
+                od.rounded_rectangle(tuple(v * SS for v in (cx-radius, cy-radius, cx+radius, cy+radius)),
+                                     radius=L.u(8)*SS,
+                                     fill=(42, 220, 113, 35 if enabled else 0) if not hovered else (255,255,255,28),
+                                     outline=(66,235,128,65) if enabled else (255,255,255,38), width=SS)
+            # Two opposing arrows, drawn as geometry for consistent Windows rendering.
+            for direction, dy in ((1, -5), (-1, 5)):
+                start = cx - direction * L.u(9)
+                end = cx + direction * L.u(9)
+                yy = cy + L.u(dy)
+                od.line((start*SS, yy*SS, end*SS, yy*SS), fill=color, width=max(2, round(2*s*SS)))
+                od.line(((end-direction*L.u(4))*SS, (yy-L.u(4))*SS,
+                         end*SS, yy*SS, (end-direction*L.u(4))*SS, (yy+L.u(4))*SS),
+                        fill=color, width=max(2, round(2*s*SS)))
         elif kind == "door" and state.get("armed") == (col["name"], key):
             cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
             rr = L.u(13)

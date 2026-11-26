@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageTk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_core  # noqa: E402
 import codex_core  # noqa: E402
+import codex_autoresume  # noqa: E402
 import glass  # noqa: E402
 
 BACKDROP = "noise"  # "noise" = fixed dark gradient (fast) | "screen" = what is behind the window
@@ -26,11 +27,12 @@ class Provider:
         self.idx = {"active": None, "accounts": []}
 
     def reload(self):
-        if self.mod is codex_core:
-            self.idx = codex_core.sync_current(codex_core.load())
-        else:
-            self.idx = claude_core.detect_active(claude_core.load())
-            claude_core.save(self.idx)
+        with codex_autoresume.OPERATION_LOCK:
+            if self.mod is codex_core:
+                self.idx = codex_core.sync_current(codex_core.load())
+            else:
+                self.idx = claude_core.detect_active(claude_core.load())
+                claude_core.save(self.idx)
         return self.idx
 
     def enrich(self, acc):
@@ -141,7 +143,31 @@ class App:
                                  menu=pystray.Menu(
                                      pystray.MenuItem("Contas", lambda: self.call(self.show), default=True),
                                      pystray.MenuItem("Abrir Codex", lambda: codex_core.open_codex()),
+                                     pystray.MenuItem("Retomar Codex ao parar por limite",
+                                                      lambda: self.call(self.toggle_autoresume),
+                                                      checked=lambda item: self.monitor.enabled()),
                                      pystray.MenuItem("Sair", lambda: self.call(self.quit))))
+        self.monitor = codex_autoresume.Monitor(
+            notify=lambda text: self.call(self.tray.notify, text, "Retomada por limite"),
+            changed=lambda: self.call(self.refresh_after_auto))
+        self.monitor.start()
+
+    def toggle_autoresume(self):
+        self.monitor.set_enabled(not self.monitor.enabled())
+        self.tray.update_menu()
+        self.tip_hide()
+        self.paint()
+
+    def refresh_after_auto(self):
+        # Wait for the recovery worker to release the account-operation lock.
+        if self.monitor.recovering:
+            self.root.after(500, self.refresh_after_auto)
+            return
+        self.prov("Codex").reload()
+        self.usage = {key: value for key, value in self.usage.items() if key[0] != "Codex"}
+        self.tray.title = self.tooltip()
+        if self.popup:
+            self.show(keep_pos=True)
 
     # ---- helpers
     def call(self, fn, *a):
@@ -203,9 +229,12 @@ class App:
     def state(self):
         return {"hover": self.hover, "armed": self.armed, "initials": initials,
                 "active": {p.name: p.idx.get("active") for p in self.providers},
+                "autoresume": self.monitor.enabled(),
                 "usage": {k: ring_left(v[1]) for k, v in self.usage.items()}}
 
     def show(self, keep_pos=False):
+        if self.monitor.recovering:
+            return
         if self.popup and not keep_pos:
             self.close()
             return
@@ -265,7 +294,7 @@ class App:
     def hit(self, x, y):
         best = None
         for kind, box, col, acc in self.items:
-            if kind in ("row", "ring", "door", "add") and box[0] <= x < box[2] and box[1] <= y < box[3]:
+            if kind in ("row", "ring", "door", "add", "auto") and box[0] <= x < box[2] and box[1] <= y < box[3]:
                 key = acc["key"] if isinstance(acc, dict) else None
                 if best is None or kind in ("ring", "door"):
                     best = (kind, col["name"], key)
@@ -281,6 +310,9 @@ class App:
             self.tip_show(h, usage_text((self.usage.get((h[1], h[2])) or (0, None))[1]))
         elif h and h[0] == "door":
             self.tip_show(h, "Clique de novo para remover" if self.armed == (h[1], h[2]) else "Remover conta")
+        elif h and h[0] == "auto":
+            self.tip_show(h, "Troca automática por limite: " +
+                          ("ativada. Clique para desativar." if self.monitor.enabled() else "desativada. Clique para ativar."))
         self.paint()
 
     def on_motion(self, e):
@@ -289,6 +321,11 @@ class App:
     def on_click(self, e):
         h = self.hit(e.x, e.y)
         if not h:
+            return
+        if h[0] == "auto":
+            self.toggle_autoresume()
+            return
+        if self.busy or self.monitor.recovering:
             return
         kind, pname, key = h
         p = self.prov(pname)
@@ -313,7 +350,8 @@ class App:
     # ---- tooltip
     def tip_show(self, h, text):
         box = next(b for k, b, c, a in self.items
-                   if k == h[0] and c["name"] == h[1] and isinstance(a, dict) and a["key"] == h[2])
+                   if k == h[0] and c["name"] == h[1]
+                   and ((isinstance(a, dict) and a["key"] == h[2]) or (k == "auto" and h[2] is None)))
         px, py = self.popup_pos
         tmp = glass.tooltip(text, (0, 0, 1, 1), self.scale, [])
         tw, th = tmp.size
@@ -351,7 +389,11 @@ class App:
                 if p.mod is claude_core and acc.get("email") in ("?", "faça login no app"):
                     p.enrich(acc)
                     self.call(lambda: self.popup and not self.busy and self.show(True))
-                res = p.mod.usage(p.idx, acc["key"])
+                if p.mod is codex_core:
+                    with codex_autoresume.OPERATION_LOCK:
+                        res = p.mod.usage(p.idx, acc["key"])
+                else:
+                    res = p.mod.usage(p.idx, acc["key"])
             except Exception as ex:  # noqa: BLE001
                 res = ex
             self.usage[(p.name, acc["key"])] = (time.time(), res)
@@ -361,11 +403,14 @@ class App:
 
     # ---- actions
     def run_bg(self, work, done):
+        if self.busy or self.monitor.recovering:
+            return
         self.busy = True
 
         def go():
             try:
-                res, err = work(), None
+                with codex_autoresume.OPERATION_LOCK:
+                    res, err = work(), None
             except Exception as ex:  # noqa: BLE001
                 res, err = None, ex
             self.call(done, res, err)
@@ -429,12 +474,14 @@ class App:
         if not ok:
             return
         try:
-            p.mod.remove_account(p.idx, acc["key"])
+            with codex_autoresume.OPERATION_LOCK:
+                p.mod.remove_account(p.idx, acc["key"])
         except Exception as ex:  # noqa: BLE001
             messagebox.showerror("Switch IA Account", str(ex))
         self.show(keep_pos=True)
 
     def quit(self):
+        self.monitor.stop()
         self.tray.stop()
         self.root.destroy()
 

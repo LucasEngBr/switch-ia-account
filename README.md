@@ -41,6 +41,31 @@
   - Claude: cria um perfil novo e abre o Claude nele para você logar.
 - **Remover conta** pelo ícone de porta, com **dupla confirmação**: o 1º clique deixa a porta vermelha, o 2º abre a confirmação final.
 - **Inicia com o Windows**, mesmo com o Claude e o Codex fechados.
+- **Retomada automática do Codex após interrupção por limite**: se uma tarefa do Desktop encerrar com o erro estruturado `usage_limit_exceeded`, consulta as outras contas, troca para a disponível com maior limite de sessão (desempate pelo semanal) e envia “Meu último pedido foi interrompido pelo limite de sessão. Veja onde parou e continue.” na mesma conversa pelo canal local do Desktop. Funciona com a conversa fora de foco.
+
+### Retomada por limite (Codex Desktop)
+
+A opção **Retomar Codex ao parar por limite**, no menu da bandeja, vem ativada. O monitor acompanha novos registros de sessão a cada três segundos e só reage a um `task_complete` com `error.codex_error_info = "usage_limit_exceeded"`, associado a um turno que começou naquela conversa.
+
+Avisos de uso próximo do fim, medidores em zero, mensagens mencionando limites, erros de rede, cancelamentos e conclusões normais não acionam a troca. Erros anteriores à inicialização do trocador também são ignorados. Se você já retomou a conversa ou mudou de conta manualmente, o evento perde a validade.
+
+A conta escolhida precisa ter dados atuais de sessão e semanal, ambos acima de zero. Sem uma conta elegível, a tarefa fica parada. Se outra conversa do Codex ainda estiver executando, o trocador não fecha o aplicativo para trocar a conta. Dentro de uma sequência de falhas por limite, não volta às contas que já foram tentadas.
+
+Cada interrupção pode gerar somente uma tentativa de envio da mensagem de retomada. O identificador do turno é salvo antes da troca; um envio com resultado incerto não é repetido automaticamente. O trocador verifica o início de outro turno e avisa quando a retomada foi confirmada.
+
+Configuração e diagnóstico ficam em `~/.codex-accounts/`:
+
+- `autoresume.json`: habilita ou desabilita o monitor (`enabled`).
+- `autoresume-state.json`: eventos tratados e contas tentadas, sem tokens ou transcrições.
+- `autoresume.log`: registro das decisões, com rotação de arquivos.
+
+O canal local do Desktop é uma interface interna e pode mudar em atualizações. Se não estiver disponível, o trocador registra a falha. Esta função não usa `codex exec resume`, não cria outra conversa e não automatiza o Claude nesta versão.
+
+Para verificar a lógica sem trocar contas reais ou enviar mensagens:
+
+```powershell
+python -B -m unittest discover -s tests -v
+```
 
 ## Instalação
 
