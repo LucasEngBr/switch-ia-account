@@ -31,7 +31,7 @@
 - **Troca com um clique.** Clique numa conta e o trocador fecha o app, troca o login e reabre na conta escolhida.
 - **Histórico preservado.**
   - Codex: as conversas ficam em `~/.codex` e são as mesmas para todas as contas (igual à extensão do Codex no Cursor/VS Code).
-  - Claude Desktop: as sessões da aba **Code** de todos os perfis apontam para a mesma pasta (junction), então você continua a conversa em qualquer conta.
+  - Claude Desktop: a lista de sessões da aba **Code** é sincronizada entre os perfis (cópia, com o Claude fechado), então você continua a conversa em qualquer conta.
 - **Medidor de limite por conta**, no estilo do app original. Passe o mouse no anel:
   - normal: `Sessão (5h): X% restantes` e `Semanal: Y% restantes`;
   - sessão esgotada: quanto falta para o reset da sessão;
@@ -101,7 +101,7 @@ Para remover: `powershell -ExecutionPolicy Bypass -File .\uninstall.ps1` (as con
 |---|---|
 | Perfis | Cada conta é uma pasta de dados do Electron. Perfis já existentes na máquina são importados sozinhos; novos ficam em `~/.claude-accounts/profiles/`. |
 | Troca | Fecha o Claude e reabre com `claude-desktop.exe --user-data-dir=<perfil>`. Só um aberto por vez. |
-| Sessões do Code | A pasta `claude-code-sessions/<conta>/<org>` de cada perfil vira um junction para a pasta do primeiro perfil, com backup antes. Assim a barra lateral do Code mostra as mesmas sessões em todas as contas. Transcrições, skills e plugins já são compartilhados por `~/.claude`. |
+| Sessões do Code | Cada perfil mantém sua pasta `claude-code-sessions/<conta>/<org>` real. A cada troca (e ao abrir pelo atalho `Claude`), com o app fechado, o trocador copia as fichas entre os perfis: a versão mais nova vence e sessões apagadas são apagadas em todos. Não usa link/junction: o Claude recusa gravar em pasta que seja link (proteção contra *symlink plant*) e as sessões se perdiam. Transcrições, skills e plugins já são compartilhados por `~/.claude`. |
 | Limites | O login do perfil é lido do `config.json` (cache criptografado pelo Electron com DPAPI + AES-GCM, só para o seu usuário do Windows) e usado em `GET api.anthropic.com/api/oauth/usage`. O trocador não renova o login do Claude: se vencer, o anel mostra `!` até você abrir aquela conta uma vez. |
 | Limitação | Conversas do chat comum (claude.ai) ficam na nuvem de cada conta e não são compartilhadas. |
 

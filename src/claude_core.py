@@ -181,46 +181,76 @@ def detect_active(idx):
 
 
 # ---------- shared Code-tab sessions
+# Claude Desktop refuses to write into a session folder that is a link ("symlink/file plant"
+# protection), so every profile keeps a real folder and the switcher copies the session
+# entries between them while Claude is closed.
 def _sessions_dir(acc):
     return os.path.join(acc["dir"], "claude-code-sessions", acc["account_uuid"], acc["org_uuid"])
 
 
-def shared_sessions(idx):
-    """The one real session-index folder all profiles point to (first profile wins, saved in index)."""
-    s = idx.get("shared_sessions")
-    if s and os.path.isdir(s):
-        return s
+def _is_link(p):
+    try:
+        return os.path.isdir(p) and _norm(os.path.realpath(p)) != _norm(p)
+    except OSError:
+        return False
+
+
+def _unlink_dir(p):
+    """Turn a junction left by older versions into a real folder with the same files."""
+    target = os.path.realpath(p)
+    files = [(f, os.path.join(target, f)) for f in os.listdir(p)] if os.path.isdir(target) else []
+    subprocess.run(["cmd", "/c", "rmdir", p], capture_output=True, creationflags=NO_WINDOW)  # removes the link only
+    os.makedirs(p, exist_ok=True)
+    for name, src in files:
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(p, name))
+        elif os.path.isdir(src):
+            shutil.copytree(src, os.path.join(p, name), dirs_exist_ok=True)
+
+
+def sync_sessions(idx):
+    """Two-way merge of Code-tab session entries between all profiles (call only with Claude closed).
+
+    local_<id>.json: newest copy wins. deleted_<id>: the session is removed everywhere.
+    """
+    dirs = []
     for a in idx["accounts"]:
         if a.get("account_uuid") and a.get("org_uuid"):
             p = _sessions_dir(a)
-            if os.path.isdir(p) and _norm(os.path.realpath(p)) == _norm(p):
-                idx["shared_sessions"] = p
-                save(idx)
-                return p
-    return None
-
-
-def link_sessions(idx, acc):
-    """Make this profile's Code-tab session index a junction to the shared folder."""
-    shared = shared_sessions(idx)
-    if not shared or not acc.get("account_uuid") or not acc.get("org_uuid"):
-        return
-    p = _sessions_dir(acc)
-    if _norm(p) == _norm(shared):
-        return
-    SHARED_SESSIONS = shared  # noqa: N806
-    if os.path.isdir(p) and os.path.realpath(p) != p and _norm(os.path.realpath(p)) == _norm(SHARED_SESSIONS):
-        return  # already linked
-    if os.path.isdir(p):
-        bak = p + ".bak-" + time.strftime("%Y%m%d-%H%M%S")
-        shutil.copytree(p, bak)
-        for f in os.listdir(p):
-            if f.startswith("local_") and f.endswith(".json") and not os.path.exists(os.path.join(SHARED_SESSIONS, f)):
-                shutil.copyfile(os.path.join(p, f), os.path.join(SHARED_SESSIONS, f))
-        shutil.rmtree(p)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    subprocess.run(["cmd", "/c", "mklink", "/J", p, SHARED_SESSIONS], capture_output=True,
-                   creationflags=NO_WINDOW)
+            if _is_link(p):
+                _unlink_dir(p)
+            os.makedirs(p, exist_ok=True)
+            dirs.append(p)
+    if len(dirs) < 2:
+        return 0
+    deleted, best = set(), {}
+    for d in dirs:
+        for f in os.listdir(d):
+            fp = os.path.join(d, f)
+            if f.startswith("deleted_"):
+                deleted.add(f[len("deleted_"):])
+            elif f.startswith("local_") and f.endswith(".json") and os.path.isfile(fp):
+                m = os.path.getmtime(fp)
+                if f not in best or m > best[f][0]:
+                    best[f] = (m, fp)
+    changed = 0
+    for d in dirs:
+        for sid in deleted:
+            marker = os.path.join(d, "deleted_" + sid)
+            if not os.path.exists(marker):
+                open(marker, "w").close()
+            stale = os.path.join(d, "local_" + sid + ".json")
+            if os.path.exists(stale):
+                os.remove(stale)
+                changed += 1
+        for f, (m, src) in best.items():
+            if f[len("local_"):-len(".json")] in deleted:
+                continue
+            dst = os.path.join(d, f)
+            if _norm(src) != _norm(dst) and (not os.path.exists(dst) or os.path.getmtime(dst) < m):
+                shutil.copy2(src, dst)
+                changed += 1
+    return changed
 
 
 # ---------- actions
@@ -248,6 +278,11 @@ def open_last():
     if running_dir():
         # already open: just bring it forward by asking the same profile again (single-instance app)
         idx = detect_active(idx)
+    else:
+        try:
+            sync_sessions(idx)          # Claude is closed: bring every profile's session list up to date
+        except Exception:  # noqa: BLE001
+            pass
     acc = next((a for a in idx["accounts"] if a["key"] == idx.get("active")), None)
     if acc is None and idx["accounts"]:
         acc = idx["accounts"][0]
@@ -260,12 +295,10 @@ def open_last():
 def switch(idx, key):
     acc = next(a for a in idx["accounts"] if a["key"] == key)
     close_app()
-    for a in idx["accounts"]:
-        try:
-            if a.get("account_uuid"):
-                link_sessions(idx, a)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        sync_sessions(idx)
+    except Exception:  # noqa: BLE001
+        pass
     launch(acc)
     idx["active"] = key
     save(idx)
