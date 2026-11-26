@@ -151,10 +151,23 @@ def _desktop_mains():
     return [l.split("|", 1) for l in out.splitlines() if "|" in l]
 
 
+def default_dir():
+    """Folder the app uses when opened without --user-data-dir (Start menu / taskbar icon)."""
+    import glob
+    for p in sorted(glob.glob(os.path.join(LOCAL, "Claude-Data", "claude_*"))) + [
+            os.path.join(os.environ.get("APPDATA", ""), "Claude")]:
+        if os.path.exists(os.path.join(p, "config.json")):
+            return p
+    return None
+
+
 def running_dir():
-    for _, cmd in _desktop_mains():
+    mains = _desktop_mains()
+    for _, cmd in mains:
         if "--user-data-dir=" in cmd:
             return cmd.split("--user-data-dir=", 1)[1].strip().strip('"').split('" ')[0].strip('"')
+    if mains:                      # opened from the normal Claude icon: that is the default folder
+        return default_dir()
     return None
 
 
@@ -227,6 +240,21 @@ def close_app():
 
 def launch(acc):
     subprocess.Popen([LAUNCHER, f"--user-data-dir={acc['dir']}"], creationflags=NO_WINDOW)
+
+
+def open_last():
+    """Open Claude in the account used last (what the 'Claude (última conta)' shortcut runs)."""
+    idx = load()
+    if running_dir():
+        # already open: just bring it forward by asking the same profile again (single-instance app)
+        idx = detect_active(idx)
+    acc = next((a for a in idx["accounts"] if a["key"] == idx.get("active")), None)
+    if acc is None and idx["accounts"]:
+        acc = idx["accounts"][0]
+    if acc is None:
+        subprocess.Popen([LAUNCHER], creationflags=NO_WINDOW)
+        return
+    launch(acc)
 
 
 def switch(idx, key):
