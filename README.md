@@ -40,6 +40,7 @@
   - Codex: abre o login no navegador (`codex login` numa pasta temporária) e guarda o resultado.
   - Claude: cria um perfil novo e abre o Claude nele para você logar.
 - **Remover conta** pelo ícone de porta, com **dupla confirmação**: o 1º clique deixa a porta vermelha, o 2º abre a confirmação final.
+- **Atalho `Claude` que abre a última conta usada** (Área de Trabalho e Menu Iniciar): o ícone normal do Claude sempre abre a conta padrão; esse atalho abre a conta em que você estava. O trocador também reconhece quando o Claude foi aberto pelo ícone normal.
 - **Inicia com o Windows**, mesmo com o Claude e o Codex fechados.
 - **Retomada automática do Codex após interrupção por limite**: se uma tarefa do Desktop encerrar com o erro estruturado `usage_limit_exceeded`, consulta as outras contas, troca para a disponível com maior limite de sessão (desempate pelo semanal) e envia “Meu último pedido foi interrompido pelo limite de sessão. Veja onde parou e continue.” na mesma conversa pelo canal local do Desktop. Funciona com a conversa fora de foco.
 
