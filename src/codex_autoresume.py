@@ -157,6 +157,10 @@ def last_lifecycle(path):
 
 
 class Monitor:
+    log_name = 'codex_autoresume'
+    provider = 'Codex'
+    limit_code = LIMIT_CODE
+
     def __init__(self, home=None, store=None, notify=None, changed=None):
         self.home = Path(home or core.CODEX_HOME)
         self.store = Path(store or core.STORE)
@@ -180,7 +184,7 @@ class Monitor:
         self.store.mkdir(parents=True, exist_ok=True)
         if state_error or not self.config_path.exists():
             atomic_json(self.config_path, {'enabled': not state_error})
-        self.log = logging.getLogger('codex_autoresume.' + hashlib.sha256(str(self.store).encode()).hexdigest()[:12])
+        self.log = logging.getLogger(self.log_name + '.' + hashlib.sha256(str(self.store).encode()).hexdigest()[:12])
         self.log.setLevel(logging.INFO)
         if not self.log.handlers:
             handler = RotatingFileHandler(self.store / 'autoresume.log', maxBytes=1024*1024, backupCount=2, encoding='utf-8')
@@ -347,7 +351,7 @@ class Monitor:
             OPERATION_LOCK.release()
 
     def run(self):
-        self.log.info('Monitor started; only new terminal %s events are eligible', LIMIT_CODE)
+        self.log.info('Monitor started; only new terminal %s events are eligible', self.limit_code)
         while not self.stop_event.wait(3):
             try:
                 self.poll()
@@ -355,7 +359,7 @@ class Monitor:
                 self.log.exception('Monitor poll failed')
 
     def start(self):
-        threading.Thread(target=self.run, name='codex-limit-monitor', daemon=True).start()
+        threading.Thread(target=self.run, name=self.provider.lower() + '-limit-monitor', daemon=True).start()
 
     def stop(self):
         self.stop_event.set()

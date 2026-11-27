@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_core  # noqa: E402
 import codex_core  # noqa: E402
 import codex_autoresume  # noqa: E402
+import claude_autoresume  # noqa: E402
 import glass  # noqa: E402
 
 BACKDROP = "noise"  # "noise" = fixed dark gradient (fast) | "screen" = what is behind the window
@@ -146,25 +147,37 @@ class App:
                                      pystray.MenuItem("Retomar Codex ao parar por limite",
                                                       lambda: self.call(self.toggle_autoresume),
                                                       checked=lambda item: self.monitor.enabled()),
+                                     pystray.MenuItem("Retomar Claude ao parar por limite",
+                                                      lambda: self.call(self.toggle_autoresume, "Claude"),
+                                                      checked=lambda item: self.claude_monitor.enabled()),
                                      pystray.MenuItem("Sair", lambda: self.call(self.quit))))
         self.monitor = codex_autoresume.Monitor(
             notify=lambda text: self.call(self.tray.notify, text, "Retomada por limite"),
             changed=lambda: self.call(self.refresh_after_auto))
-        self.monitor.start()
+        self.claude_monitor = claude_autoresume.Monitor(
+            notify=lambda text: self.call(self.tray.notify, text, "Retomada por limite"),
+            changed=lambda: self.call(self.refresh_after_auto, "Claude"))
+        self.monitors = {"Codex": self.monitor, "Claude": self.claude_monitor}
+        for monitor in self.monitors.values():
+            monitor.start()
 
-    def toggle_autoresume(self):
-        self.monitor.set_enabled(not self.monitor.enabled())
+    def auto_busy(self):
+        return any(monitor.recovering for monitor in self.monitors.values())
+
+    def toggle_autoresume(self, provider="Codex"):
+        monitor = self.monitors[provider]
+        monitor.set_enabled(not monitor.enabled())
         self.tray.update_menu()
         self.tip_hide()
         self.paint()
 
-    def refresh_after_auto(self):
+    def refresh_after_auto(self, provider="Codex"):
         # Wait for the recovery worker to release the account-operation lock.
-        if self.monitor.recovering:
-            self.root.after(500, self.refresh_after_auto)
+        if self.auto_busy():
+            self.root.after(500, self.refresh_after_auto, provider)
             return
-        self.prov("Codex").reload()
-        self.usage = {key: value for key, value in self.usage.items() if key[0] != "Codex"}
+        self.prov(provider).reload()
+        self.usage = {key: value for key, value in self.usage.items() if key[0] != provider}
         self.tray.title = self.tooltip()
         if self.popup:
             self.show(keep_pos=True)
@@ -229,11 +242,11 @@ class App:
     def state(self):
         return {"hover": self.hover, "armed": self.armed, "initials": initials,
                 "active": {p.name: p.idx.get("active") for p in self.providers},
-                "autoresume": self.monitor.enabled(),
+                "autoresume": {name: monitor.enabled() for name, monitor in self.monitors.items()},
                 "usage": {k: ring_left(v[1]) for k, v in self.usage.items()}}
 
     def show(self, keep_pos=False):
-        if self.monitor.recovering:
+        if self.auto_busy():
             return
         if self.popup and not keep_pos:
             self.close()
@@ -312,7 +325,7 @@ class App:
             self.tip_show(h, "Clique de novo para remover" if self.armed == (h[1], h[2]) else "Remover conta")
         elif h and h[0] == "auto":
             self.tip_show(h, "Troca automática por limite: " +
-                          ("ativada. Clique para desativar." if self.monitor.enabled() else "desativada. Clique para ativar."))
+                          ("ativada. Clique para desativar." if self.monitors[h[1]].enabled() else "desativada. Clique para ativar."))
         self.paint()
 
     def on_motion(self, e):
@@ -323,9 +336,9 @@ class App:
         if not h:
             return
         if h[0] == "auto":
-            self.toggle_autoresume()
+            self.toggle_autoresume(h[1])
             return
-        if self.busy or self.monitor.recovering:
+        if self.busy or self.auto_busy():
             return
         kind, pname, key = h
         p = self.prov(pname)
@@ -386,13 +399,10 @@ class App:
 
         def work():
             try:
-                if p.mod is claude_core and acc.get("email") in ("?", "faça login no app"):
-                    p.enrich(acc)
-                    self.call(lambda: self.popup and not self.busy and self.show(True))
-                if p.mod is codex_core:
-                    with codex_autoresume.OPERATION_LOCK:
-                        res = p.mod.usage(p.idx, acc["key"])
-                else:
+                with codex_autoresume.OPERATION_LOCK:
+                    if p.mod is claude_core and acc.get("email") in ("?", "faça login no app"):
+                        p.enrich(acc)
+                        self.call(lambda: self.popup and not self.busy and self.show(True))
                     res = p.mod.usage(p.idx, acc["key"])
             except Exception as ex:  # noqa: BLE001
                 res = ex
@@ -403,7 +413,7 @@ class App:
 
     # ---- actions
     def run_bg(self, work, done):
-        if self.busy or self.monitor.recovering:
+        if self.busy or self.auto_busy():
             return
         self.busy = True
 
@@ -481,7 +491,8 @@ class App:
         self.show(keep_pos=True)
 
     def quit(self):
-        self.monitor.stop()
+        for monitor in self.monitors.values():
+            monitor.stop()
         self.tray.stop()
         self.root.destroy()
 
@@ -499,9 +510,24 @@ if __name__ == "__main__":
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:  # noqa: BLE001
         pass
+    import faulthandler
+    faulthandler.enable(sys.stderr)                  # native crashes also leave a trace in the log
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "CodexSwitcherSingleton")
     if ctypes.windll.kernel32.GetLastError() == 183:
+        print("ja estava aberto: saindo")
         sys.exit(0)
+    # At logon the taskbar may not exist yet; an icon added then is silently lost.
+    # Wait for the tray window, then give Explorer a few more seconds to settle.
+    user32 = ctypes.windll.user32
+    ctypes.windll.kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+    uptime_s = ctypes.windll.kernel32.GetTickCount64() / 1000
+    for _ in range(120):
+        if user32.FindWindowW("Shell_TrayWnd", None):
+            break
+        time.sleep(1)
+    if uptime_s < 300:
+        time.sleep(15)
+    print(time.strftime("bandeja pronta %H:%M:%S"))
     import traceback
     try:
         app = App()

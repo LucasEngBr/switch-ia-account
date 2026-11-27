@@ -78,7 +78,7 @@ def build(columns, s=1.0):
         x0 = L.pad + ci * (L.col_w + L.gap)
         y = L.pad + L.inner
         items.append(("head", (x0, y, x0 + L.col_w, y + L.head_h), col, None))
-        if col["name"] == "Codex":
+        if col["name"] in ("Codex", "Claude"):
             items.append(("auto", (x0 + L.col_w - L.u(54), y + L.u(2),
                                    x0 + L.col_w - L.u(10), y + L.head_h - L.u(2)), col, None))
         y += L.head_h
@@ -328,7 +328,8 @@ def render(bg, items, L, state, ops=None):
             od.line(((box[0] + L.u(18)) * SS, y * SS, (box[2] - L.u(18)) * SS, y * SS),
                     fill=(255, 255, 255, 26), width=SS)
         elif kind == "auto":
-            enabled = state.get("autoresume", False)
+            automation = state.get("autoresume", False)
+            enabled = automation.get(col["name"], False) if isinstance(automation, dict) else automation
             hovered = state.get("hover") == ("auto", col["name"], None)
             cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
             radius = L.u(15)

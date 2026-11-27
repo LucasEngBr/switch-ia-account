@@ -60,7 +60,23 @@ Configuração e diagnóstico ficam em `~/.codex-accounts/`:
 - `autoresume-state.json`: eventos tratados e contas tentadas, sem tokens ou transcrições.
 - `autoresume.log`: registro das decisões, com rotação de arquivos.
 
-O canal local do Desktop é uma interface interna e pode mudar em atualizações. Se não estiver disponível, o trocador registra a falha. Esta função não usa `codex exec resume`, não cria outra conversa e não automatiza o Claude nesta versão.
+O canal local do Desktop é uma interface interna e pode mudar em atualizações. Se não estiver disponível, o trocador registra a falha. Esta função não usa `codex exec resume` e não cria outra conversa.
+
+### Retomada por limite (Claude Desktop / aba Code)
+
+O ícone **⇄** no cabeçalho de cada coluna controla a automação daquela plataforma: verde significa ativada, cinza significa desativada. Claude e Codex têm preferências independentes, salvas entre reinicializações. Também há uma opção **Retomar Claude ao parar por limite** no menu da bandeja.
+
+No Claude, só uma mensagem de erro real da sessão principal, com `isApiErrorMessage: true`, `apiError: "usage_limit_reached"` e origem `claude-desktop`, pode iniciar a troca. O monitor exige um pedido ainda não concluído antes desse erro. Avisos, erros antigos, subagentes, cancelamentos, falhas de rede e chamadas avulsas à CLI não disparam a automação. A conversa precisa estar cadastrada no índice da aba Code e não pode estar arquivada.
+
+O trocador consulta os limites, exclui a conta esgotada e as já tentadas naquela sequência, e escolhe a outra com mais limite de sessão (desempate pelo semanal). As duas janelas precisam ter disponibilidade. Se outra tarefa do Claude ainda estiver executando, não fecha o Desktop para trocar. Intervenção manual ou mudança de conta antes da retomada invalida o evento.
+
+Após reabrir o Desktop no perfil escolhido, executa `claude -p ... --resume <cliSessionId>` no diretório original, com a mesma mensagem contextual do Codex. O token é lido do perfil selecionado, sua identidade é verificada e ele é passado apenas no ambiente daquele processo; o login padrão da CLI não é alterado e tokens não são gravados nos registros da automação. São preservados modelo, esforço e modo de permissão disponíveis no registro da sessão, sem habilitar permissões extras.
+
+A execução começa em segundo plano e grava a conversa original; o teste local confirmou a exibição no Desktop ao reabrir. Atualização ao vivo não é garantida. Ferramentas exclusivas do Desktop não são disponibilizadas pela CLI. O monitor não impõe um tempo máximo à tarefa nem mantém o bloqueio de troca do Codex enquanto ela trabalha. Se você enviar outra mensagem pelo Desktop durante essa retomada, a CLI automática é interrompida para evitar duas execuções na mesma conversa.
+
+Há uma tentativa de envio por erro, com registro persistente antes de iniciar o processo. Uma nova troca após falha da própria CLI só é permitida quando seu resultado e a transcrição confirmam outra interrupção por limite. Erros genéricos e resultados incertos não provocam reenvio automático.
+
+O Claude requer a CLI `claude` instalada. Configuração, eventos tratados e log ficam em `~/.claude-accounts/autoresume.json`, `autoresume-state.json` e `autoresume.log`, separados dos arquivos do Codex.
 
 Para verificar a lógica sem trocar contas reais ou enviar mensagens:
 
